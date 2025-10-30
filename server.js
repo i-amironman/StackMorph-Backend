@@ -1,4 +1,6 @@
+// Load environment variables from .env file
 require('dotenv').config();
+
 const express = require('express');
 const fileUpload = require('express-fileupload');
 const cors = require('cors');
@@ -57,25 +59,34 @@ const getAllFilePaths = (dir) => {
     return results;
 };
 
-const parseCodeFromResponse = (text) => {
-    const codeBlockRegex = /```(?:\w+\n)?([\s\S]+)```/;
-    const match = text.match(codeBlockRegex);
-    return match && match[1] ? match[1].trim() : text.trim();
+/**
+ * Parses the AI's structured response and returns an array of { path, content } objects.
+ * Expects format:
+ * // START_FILE: path/to/file.js
+ * ... file content ...
+ * // END_FILE: path/to/file.js
+ */
+const parseAIResponse = (responseText) => {
+  const files = [];
+  const fileRegex = /\/\/ START_FILE: ([\S]+)\n([\s\S]*?)\n\/\/ END_FILE: \1/g;
+  let match;
+
+  while ((match = fileRegex.exec(responseText)) !== null) {
+    const filePath = match[1];
+    const fileContent = match[2].trim();
+    files.push({ path: filePath, content: fileContent });
+  }
+  return files;
 };
 
 
 // --- API ROUTES ---
-// All API routes should be defined here, before the frontend serving logic.
-
 app.post('/convert', async (req, res) => {
   console.log('[API /convert] Received conversion request.');
 
   if (!process.env.GEMINI_API_KEY) {
     return res.status(500).json({ error: 'Server is not configured with a Gemini API key.' });
   }
-  // ---
-  // MODIFICATION: Changed 'projectZip' to 'sourceCode' to match frontend
-  // ---
   if (!req.files || !req.files.sourceCode) {
     return res.status(400).json({ error: 'No .zip file was uploaded under the "sourceCode" field.' });
   }
@@ -83,63 +94,89 @@ app.post('/convert', async (req, res) => {
     return res.status(400).json({ error: 'The "targetStack" field is required.' });
   }
 
-  // ---
-  // MODIFICATION: Changed 'projectZip' to 'sourceCode' to match frontend
-  // ---
   const projectZip = req.files.sourceCode;
   const { targetStack } = req.body;
-  
-  if (projectZip.mimetype !== 'application/zip' && projectZip.mimetype !== 'application/x-zip-compressed') {
-    return res.status(400).json({ error: `Invalid file type: ${projectZip.mimetype}. Please upload a .zip file.` });
-  }
-
   const requestTempDir = path.join(tempDir, `request-${Date.now()}`);
 
   try {
+    // 1. Extract source project
     const extractPath = path.join(requestTempDir, 'source');
     const zip = new AdmZip(projectZip.data);
     zip.extractAllTo(extractPath, /*overwrite*/ true);
     console.log(`[API /convert] Extracted project to: ${extractPath}`);
 
+    // 2. Read all code files into a single context
     const allFiles = getAllFilePaths(extractPath);
     const codeFiles = allFiles.filter(file => CODE_EXTENSIONS.has(path.extname(file)));
     console.log(`[API /convert] Found ${codeFiles.length} code files to process.`);
-    
+
+    const projectContext = [];
     for (const filePath of codeFiles) {
-        const originalContent = fs.readFileSync(filePath, 'utf-8');
-        if (!originalContent.trim()) continue;
-
-        const prompt = `You are an expert programmer specializing in frontend framework migration. Convert the following code snippet to ${targetStack}.
-        - Preserve the original logic, functionality, and file structure.
-        - Use modern best practices and idiomatic code for ${targetStack}.
-        - Ensure the converted code is fully functional and equivalent to the original.
-        - The output must be ONLY the raw code for the new file, without any explanations, introductions, or markdown code blocks.
-        
-        Original file content (${path.basename(filePath)}):
-        ---
-        ${originalContent}
-        ---
-        
-        Converted ${targetStack} code:`;
-
-        try {
-            console.log(`[API /convert] Converting file: ${path.relative(extractPath, filePath)}`);
-            const response = await ai.models.generateContent({
-              model: geminiModel,
-              contents: prompt
-            });
-            const convertedCode = parseCodeFromResponse(response.text);
-            fs.writeFileSync(filePath, convertedCode, 'utf-8');
-        } catch (error) {
-            console.error(`[API /convert] Gemini API failed for file ${filePath}. Error: ${error.message}. Keeping original content.`);
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const relativePath = path.relative(extractPath, filePath).replace(/\\/g, '/'); // Ensure posix paths
+        if (content.trim()) {
+            projectContext.push(`File: ${relativePath}\n\`\`\`\n${content}\n\`\`\``);
         }
     }
-    
-    const outputZip = new AdmZip();
-    outputZip.addLocalFolder(extractPath);
-    const outputZipBuffer = outputZip.toBuffer();
-    console.log('[API /convert] Re-packaged converted project.');
+    const fullProjectCode = projectContext.join('\n\n---\n\n');
 
+    // 3. Create the new "Full Project Context" prompt
+    const prompt = `
+You are an expert AI programmer specializing in whole-project framework migration.
+You will be given the complete source code for a project, with each file clearly demarcated.
+Your task is to convert the *entire* project to ${targetStack}.
+
+RULES:
+- Maintain the original file structure as closely as possible.
+- Correctly update all imports, exports, and component relationships for ${targetStack}.
+- Convert all syntax, state management, and logic to be idiomatic for ${targetStack}.
+- Preserve all functionality.
+- The output must *only* be the raw code for the new files. Do not include *any* explanations or introductory text.
+- You *must* format your response as a series of files, using the following exact format:
+
+// START_FILE: path/to/new/file.js
+... (all the content for this file) ...
+// END_FILE: path/to/new/file.js
+
+// START_FILE: path/to/another/file.css
+... (all the content for this file) ...
+// END_FILE: path/to/another/file.css
+
+Here is the original project's source code:
+---
+${fullProjectCode}
+---
+    `;
+
+    // 4. Send the single, massive request to the AI
+    console.log(`[API /convert] Sending full project context (${fullProjectCode.length} chars) to Gemini...`);
+    
+    // Note: This API call will be much slower than before.
+    const response = await ai.models.generateContent({
+      model: geminiModel,
+      contents: prompt
+    });
+
+    const aiResponseText = response.text;
+    console.log('[API /convert] Received response from Gemini.');
+
+    // 5. Parse the AI's response and create the new zip file
+    const convertedFiles = parseAIResponse(aiResponseText);
+
+    if (convertedFiles.length === 0) {
+      console.error('[API /convert] AI response was not in the expected format. No files were parsed.');
+      return res.status(500).json({ error: 'Conversion failed: The AI returned an unparsable response.' });
+    }
+
+    const outputZip = new AdmZip();
+    for (const file of convertedFiles) {
+        outputZip.addFile(file.path, Buffer.from(file.content, 'utf8'));
+    }
+
+    const outputZipBuffer = outputZip.toBuffer();
+    console.log(`[API /convert] Re-packaged ${convertedFiles.length} converted files.`);
+
+    // 6. Send the new zip file to the client
     res.set('Content-Type', 'application/zip');
     res.set('Content-Disposition', `attachment; filename="converted-${projectZip.name}"`);
     res.send(outputZipBuffer);
@@ -158,14 +195,10 @@ app.post('/convert', async (req, res) => {
 
 
 // --- SERVE FRONTEND ---
-// This section must come AFTER all API routes.
+// (This section remains unchanged)
 const buildPath = path.join(__dirname, 'dist');
 if (fs.existsSync(buildPath)) {
-  // Serve static files from the 'dist' directory
   app.use(express.static(buildPath));
-  
-  // The 'catchall' handler for a single-page-application (SPA).
-  // It sends index.html for any GET request that doesn't match a static file.
   app.get('*', (req, res) => {
     res.sendFile(path.join(buildPath, 'index.html'));
   });
