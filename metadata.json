@@ -1,5 +1,4 @@
 {
-  "name": "Copy of Stack Morph - Backend",
-  "description": "A powerful and intuitive web application that leverages the Google Gemini API to convert code snippets between popular frontend frameworks like React, Vue, and Svelte. Simply paste your code, select the target framework, and get the converted version instantly.",
-  "requestFramePermissions": []
+  "name": "Stack Morph - Backend API",
+  "description": "A backend API server that powers the StackMorph Chrome Extension. It receives a .zip file, converts the code within using the Gemini API, and returns a new .zip file."
 }

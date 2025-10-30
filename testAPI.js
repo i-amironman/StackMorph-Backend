@@ -6,6 +6,7 @@ const AdmZip = require('adm-zip');
 
 // --- CONFIGURATION ---
 // IMPORTANT: Replace this with your actual Cloud Run service URL (e.g., https://my-service-name-abcdef-uw.a.run.app)
+// OR use http://localhost:8080 for local testing
 const CLOUD_RUN_BASE_URL = 'https://copy-of-stack-morph-backend-402409256703.us-west1.run.app';
 const API_ENDPOINT = `${CLOUD_RUN_BASE_URL}/convert`;
 const TARGET_STACK = 'Vue';
@@ -59,8 +60,9 @@ const runTest = async () => {
   const testZipBuffer = createTestZip();
   const form = new FormData();
 
-  // The third argument is the filename, which is important for multipart/form-data
-  form.append('projectZip', testZipBuffer, { filename: 'test-project.zip' });
+  // The field name 'sourceCode' MUST match the name in server.js (req.files.sourceCode)
+  // and popup.js (formData.append('sourceCode', ...))
+  form.append('sourceCode', testZipBuffer, { filename: 'test-project.zip' });
   form.append('targetStack', TARGET_STACK);
 
   try {
@@ -91,8 +93,15 @@ const runTest = async () => {
       // The request was made and the server responded with a status code
       // that falls out of the range of 2xx
       console.error(`- Status Code: ${error.response.status}`);
-      // The response data for an error is likely text or html for a 404, not JSON
-      const responseData = Buffer.from(error.response.data).toString('utf8');
+      // The response data for an error is likely text or json
+      let responseData = 'Could not parse error response.';
+      try {
+        // Try parsing as JSON first
+        responseData = JSON.parse(Buffer.from(error.response.data).toString('utf8'));
+      } catch (e) {
+        // Fallback to plain text
+        responseData = Buffer.from(error.response.data).toString('utf8');
+      }
       console.error('- Response Body:', responseData);
     } else if (error.request) {
       // The request was made but no response was received
@@ -102,9 +111,9 @@ const runTest = async () => {
       console.error('- Error message:', error.message);
     }
     console.error('\nTroubleshooting tips:');
-    console.error('1. Double-check your CLOUD_RUN_BASE_URL.');
-    console.error('2. Ensure your Cloud Run service is running and accessible.');
-    console.error('3. Check the Cloud Run logs for any server-side errors.');
+    console.error('1. Is the server running? (`npm start`)');
+    console.error('2. Double-check your CLOUD_RUN_BASE_URL in this script.');
+    console.error('3. Check the server logs for any runtime errors.');
   }
 };
 
