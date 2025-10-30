@@ -72,14 +72,20 @@ app.post('/convert', async (req, res) => {
   if (!process.env.GEMINI_API_KEY) {
     return res.status(500).json({ error: 'Server is not configured with a Gemini API key.' });
   }
-  if (!req.files || !req.files.projectZip) {
-    return res.status(400).json({ error: 'No .zip file was uploaded under the "projectZip" field.' });
+  // ---
+  // MODIFICATION: Changed 'projectZip' to 'sourceCode' to match frontend
+  // ---
+  if (!req.files || !req.files.sourceCode) {
+    return res.status(400).json({ error: 'No .zip file was uploaded under the "sourceCode" field.' });
   }
   if (!req.body.targetStack) {
     return res.status(400).json({ error: 'The "targetStack" field is required.' });
   }
 
-  const projectZip = req.files.projectZip;
+  // ---
+  // MODIFICATION: Changed 'projectZip' to 'sourceCode' to match frontend
+  // ---
+  const projectZip = req.files.sourceCode;
   const { targetStack } = req.body;
   
   if (projectZip.mimetype !== 'application/zip' && projectZip.mimetype !== 'application/x-zip-compressed') {
@@ -173,4 +179,3 @@ if (fs.existsSync(buildPath)) {
 app.listen(PORT, () => {
   console.log(`Server is live and listening on port ${PORT}`);
 });
-
