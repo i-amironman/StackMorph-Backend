@@ -66,6 +66,10 @@ const getAllFilePaths = (dir) => {
  * ... file content ...
  * // END_FILE: path/to/file.js
  */
+// ---
+// MODIFICATION: This function is now smarter and removes markdown code fences
+// (like ```json ... ```) that the AI might add.
+// ---
 const parseAIResponse = (responseText) => {
   const files = [];
   const fileRegex = /\/\/ START_FILE: ([\S]+)\n([\s\S]*?)\n\/\/ END_FILE: \1/g;
@@ -73,8 +77,20 @@ const parseAIResponse = (responseText) => {
 
   while ((match = fileRegex.exec(responseText)) !== null) {
     const filePath = match[1];
-    const fileContent = match[2].trim();
-    files.push({ path: filePath, content: fileContent });
+    let fileContent = match[2]; // Get the content block
+
+    // Regex to find content wrapped in markdown fences (e.g., ```json ... ```)
+    // It matches an optional language tag (like 'json')
+    // It uses [\s\S]*? to grab the content non-greedily
+    const markdownFenceRegex = /^\s*```[a-z]*\n([\s\S]*?)\n```\s*$/;
+    const fenceMatch = fileContent.match(markdownFenceRegex);
+
+    if (fenceMatch) {
+      // If it matches, the real content is in group 1
+      fileContent = fenceMatch[1];
+    }
+
+    files.push({ path: filePath, content: fileContent.trim() });
   }
   return files;
 };
@@ -122,27 +138,38 @@ app.post('/convert', async (req, res) => {
 
     // 3. Create the new "Full Project Context" prompt
     const prompt = `
-You are an expert AI programmer specializing in whole-project framework migration.
-You will be given the complete source code for a project, with each file clearly demarcated.
-Your task is to convert the *entire* project to ${targetStack}.
+You are an expert AI software engineer. Your task is to perform a complete migration of the provided source code to a new, runnable project using ${targetStack}.
 
-RULES:
-- Maintain the original file structure as closely as possible.
-- Correctly update all imports, exports, and component relationships for ${targetStack}.
-- Convert all syntax, state management, and logic to be idiomatic for ${targetStack}.
-- Preserve all functionality.
-- The output must *only* be the raw code for the new files. Do not include *any* explanations or introductory text.
-- You *must* format your response as a series of files, using the following exact format:
+You will be given the complete source code for a project, with each file clearly demarcated.
+
+**Your goal is to output a complete, runnable ${targetStack} project, not just a 1-to-1 file conversion.**
+
+**MANDATORY INSTRUCTIONS:**
+
+1.  **Convert Logic:** Convert all source files to be idiomatic for ${targetStack}, preserving all logic and functionality.
+2.  **Create Folder Structure:** Organize all converted files into a standard, professional folder structure for a modern ${targetStack} project (e.g., for Vue/React, use a 'src' directory with 'components', 'assets', etc.).
+3.  **Generate 'package.json':** Create a new 'package.json' file. It must include:
+    * The correct main dependency (e.g., "react", "vue", "svelte").
+    * The necessary build tools as 'devDependencies' (e.g., "vite" and its plugins).
+    * Script commands for "dev" and "build".
+4.  **Generate Build Config:** Create any necessary build configuration files (e.g., 'vite.config.js').
+5.  **Generate 'index.html':** Create a new root 'index.html' file to load the new ${targetStack} application.
+6.  **Generate 'README.md':** Create a new 'README.md' file that includes:
+    * A title for the converted project.
+    * Simple setup instructions: 'npm install' and 'npm run dev'.
+7.  **Handle Imports:** Ensure all file imports/exports are updated to reflect the new file structure and syntax.
+
+**OUTPUT FORMAT:**
+- The output must *only* be the raw code for the new files.
+- Do not include *any* explanations or introductory text.
+- You *must* format your response as a series of files, using the following exact format for *every* file (including 'package.json', 'README.md', etc.):
 
 // START_FILE: path/to/new/file.js
 ... (all the content for this file) ...
 // END_FILE: path/to/new/file.js
 
-// START_FILE: path/to/another/file.css
-... (all the content for this file) ...
-// END_FILE: path/to/another/file.css
-
-Here is the original project's source code:
+---
+**ORIGINAL PROJECT SOURCE CODE:**
 ---
 ${fullProjectCode}
 ---
